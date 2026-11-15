@@ -15,18 +15,28 @@ from fast_blog.schemas import PostCreate, PostResponse, UserCreate, UserResponse
 import fast_blog.models as models
 from fast_blog.database import Base, engine, get_db
 
+# creates the tables on startup if they don't exist yet. fine for now
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+# resolve paths relative to this file so it works no matter where uvicorn gets launched from
 BASE_DIR = Path(__file__).parent
 
+# /static is for the app's own assets (css, js, icons)
+# /media is for user uploads like profile pics
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/media", StaticFiles(directory=BASE_DIR / "media"), name="media")
 
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
+# ---------- html pages ----------
+# include_in_schema=False keeps these out of the /docs page since
+# they return html, not json
+
+
+# both / and /posts show the same feed
 @app.get("/", include_in_schema=False, name="home")
 @app.get("/posts", include_in_schema=False, name="posts")
 def home(request: Request, db: Annotated[Session, Depends(get_db)]):
@@ -44,11 +54,13 @@ def post_page(request: Request, post_id: int, db: Annotated[Session, Depends(get
     result = db.execute(select(models.Post).where(models.Post.id == post_id))
     post = result.scalars().first()
     if post:
+        # cap it so a long title doesn't blow up the browser tab
         title = post.title[:50]
         return templates.TemplateResponse(
             request, "post.html", {"post": post, "title": title}
         )
 
+    # the exception handler at the bottom turns this into the error page
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
 
@@ -60,6 +72,8 @@ def post_page(request: Request, post_id: int, db: Annotated[Session, Depends(get
 def user_posts_page(
     request: Request, user_id: int, db: Annotated[Session, Depends(get_db)]
 ):
+    # check the user exists first so we can 404 instead of just
+    # showing an empty list
     result = db.execute(select(models.User).where(models.User.id == user_id))
     user = result.scalars().first()
     if not user:
@@ -76,10 +90,17 @@ def user_posts_page(
     )
 
 
+# ---------- json api ----------
+# response_model makes fastapi filter the output through the pydantic
+# schema, so only the fields defined there get sent back
+
+
 @app.post(
     "/api/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED
 )
 def create_user(user: UserCreate, db: Annotated[Session, Depends(get_db)]):
+    # checking username and email separately so the error says which
+    # one is taken. the db has unique constraints too as a backup
     result = db.execute(
         select(models.User).where(models.User.username == user.username)
     )
@@ -104,6 +125,7 @@ def create_user(user: UserCreate, db: Annotated[Session, Depends(get_db)]):
 
     db.add(new_user)
     db.commit()
+    # refresh pulls back the generated id + defaults from the db
     db.refresh(new_user)
 
     return new_user
@@ -147,6 +169,8 @@ def get_posts(db: Annotated[Session, Depends(get_db)]):
     "/api/posts", response_model=PostResponse, status_code=status.HTTP_201_CREATED
 )
 def create_post(post: PostCreate, db: Annotated[Session, Depends(get_db)]):
+    # make sure the author actually exists before inserting, otherwise
+    # we'd end up with a post pointing at nobody
     result = db.execute(select(models.User).where(models.User.id == post.user_id))
     user = result.scalars().first()
     if not user:
@@ -176,6 +200,14 @@ def get_post(post_id: int, db: Annotated[Session, Depends(get_db)]):
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
 
+# ---------- error handling ----------
+# same error, two different outputs: api routes get json, everything
+# else gets the html error page so a browser user isn't staring at raw json
+
+
+# catching the starlette version instead of fastapi's so this also
+# handles errors starlette raises itself, like 404s for routes that
+# don't exist
 @app.exception_handler(StarletteHTTPException)
 def general_http_exception_handler(request: Request, exception: StarletteHTTPException):
     message = (
@@ -202,6 +234,9 @@ def general_http_exception_handler(request: Request, exception: StarletteHTTPExc
     )
 
 
+# fires when the request doesn't match the pydantic schema / path params
+# (e.g. /posts/abc instead of an int). api clients get the full list of
+# what failed, the html page just gets a generic message
 @app.exception_handler(RequestValidationError)
 def validation_exception_handler(request: Request, exception: RequestValidationError):
     if request.url.path.startswith("/api"):
