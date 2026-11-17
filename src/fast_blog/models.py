@@ -24,7 +24,9 @@ class User(Base):
     )
 
     # one user -> many posts. back_populates links it to Post.author
-    posts: Mapped[list[Post]] = relationship(back_populates="author")
+    posts: Mapped[list[Post]] = relationship(
+        back_populates="author", cascade="all, delete-orphan"
+    )
 
     # builds the url for the profile pic, falls back to the default one
     # if the user never uploaded anything. uploads live in /media, the
