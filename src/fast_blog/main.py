@@ -72,7 +72,7 @@ def post_page(request: Request, post_id: int, db: Annotated[Session, Depends(get
 
 
 @app.get(
-    "/api/users/{user_id}/posts",
+    "/users/{user_id}/posts",
     response_model=list[PostResponse],
     include_in_schema=False,
 )
